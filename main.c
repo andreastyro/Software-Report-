@@ -43,6 +43,8 @@ QueueHandle_t xSensorQueue;
 QueueHandle_t xRoundQueue;
 SemaphoreHandle_t xBinarySemaphore;
 SemaphoreHandle_t xRoundSemaphore;
+SemaphoreHandle_t xDeathSemaphore;
+
 
 /* USER CODE END PD */
 
@@ -104,8 +106,7 @@ int zombie_x = 0;
 int zombie_y = 0;
 int zombie_state = 0;
 int zombie_count = 5;
-
-
+int health = 3;
 
 #define DWT_CTRL (*(volatile uint32_t*) 0xE0001000)
 
@@ -120,15 +121,16 @@ static void MX_USART2_UART_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_TIM2_Init(void);
-void StartRoundTask(void const * argument);
+
+void StartRoundTask(void const *pvParameters);
 void StartDisplayTask(void const * argument);
-void Start_Zombie_Follow(void const * argument);
-void StartShootTask(void const * argument);
-void StartMoveTask(void const * argument);
-void StartFetchTask(void const * argument);
-void StartSwitchModeTask(void const * argument);
-void StartDeathTask(void const * argument);
-void StartHealTask(void const * argument);
+void Start_Zombie_Follow(void const *pvParameters);
+void StartShootTask(void const *pvParameters);
+void StartMoveTask(void const *pvParameters);
+void StartFetchTask(void const *pvParameters);
+void StartSwitchModeTask(void const *pvParameters);
+void StartDeathTask(void const *pvParameters);
+void StartHealTask(void const *pvParameters);
 
 /* USER CODE BEGIN PFP */
 
@@ -200,6 +202,39 @@ void removepixel(uint8_t r, uint8_t c){
 	data[1] = screenstatus[r];
 	HAL_I2C_Master_Transmit(&hi2c1, LEDMAT_ADD, data, 2, HAL_MAX_DELAY);
 }
+
+void end_game(){
+		HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), HAL_MAX_DELAY);
+
+		clearscreen();
+		turnoffscreen();
+	    char response = '\0';
+
+	    while (response != 'Y' && response != 'N')
+	    {
+	        // Wait for user input via UART
+	        HAL_UART_Receive(&huart2, (uint8_t *)&response, 1, HAL_MAX_DELAY);
+	        response = toupper(response); // Normalize input
+	    }
+
+	    if (response == 'Y')
+	    {
+	        // Notify user
+	        sprintf(msg, "RESTARTING GAME...\r\n");
+	        HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), HAL_MAX_DELAY);
+
+	        NVIC_SystemReset();
+
+	    }
+	    else if (response == 'N')
+	    {
+	        // Notify user
+	        sprintf(msg, "See you next time Soldier!!!\r\n");
+	        HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), HAL_MAX_DELAY);
+	    }
+
+}
+
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
@@ -322,7 +357,7 @@ int main(void)
   switch_modeHandle = osThreadCreate(osThread(switch_mode), NULL);
 
   /* definition and creation of deathTask */
-  osThreadDef(deathTask, StartDeathTask, osPriorityIdle, 0, 128);
+  osThreadDef(deathTask, StartDeathTask, osPriorityHigh, 0, 128);
   deathTaskHandle = osThreadCreate(osThread(deathTask), NULL);
 
   /* definition and creation of healTask */
@@ -334,6 +369,7 @@ int main(void)
 
   xBinarySemaphore = xSemaphoreCreateBinary();
   xRoundSemaphore  = xSemaphoreCreateBinary();
+  xDeathSemaphore  = xSemaphoreCreateBinary();
 
   xSensorQueue = xQueueCreate(queue_length, sensor_queue_item_size);
   xRoundQueue = xQueueCreate(queue_length, sensor_queue_item_size);
@@ -346,6 +382,8 @@ int main(void)
   xTaskCreate(StartShootTask, "ShootTask", 1000, NULL, 1, NULL);
   //xTaskCreate(Start_Zombie_Follow, "ZombieFollowTask", 1000, NULL, 2, NULL);
   xTaskCreate(StartRoundTask, "RoundTask", 1000, NULL, 2, NULL);
+  xTaskCreate(StartRoundTask, "DeathTask", 1000, NULL, 2, NULL);
+
 
   vTaskResume(moveHandle);
   vTaskSuspend(shootTaskHandle);
@@ -455,13 +493,13 @@ static void MX_ADC1_Init(void)
   hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
   hadc1.Init.ScanConvMode = ENABLE;
-  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.ContinuousConvMode = ENABLE;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
   hadc1.Init.NbrOfConversion = 2;
-  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.DMAContinuousRequests = ENABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
   {
@@ -672,6 +710,8 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
     static uint32_t last_interrupt_time = 0; // Timestamp of the last valid interrupt
     uint32_t current_time = HAL_GetTick();  // Current time in milliseconds
+    static uint32_t press_start_time = 0;      // Time when the button is pressed
+    static uint32_t last_heal_time = 0;       // Last time healing was applied
 
     if(GPIO_Pin == GPIO_PIN_4) // If The INT Source Is EXTI Line9 (A9 Pin)
     {
@@ -689,10 +729,14 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
             // Request a context switch if necessary
             portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 
+
         }
 
     }
 }
+
+
+
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN Header_StartRoundTask */
@@ -702,7 +746,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
   * @retval None
   */
 /* USER CODE END Header_StartRoundTask */
-void StartRoundTask(void const * argument)
+void StartRoundTask(void const *pvParameters)
 {
   /* USER CODE BEGIN 5 */
   int round = 1;
@@ -712,11 +756,36 @@ void StartRoundTask(void const * argument)
   {
 
 	if (xSemaphoreTake(xRoundSemaphore, portMAX_DELAY) == pdTRUE){
+
 		  round = round + 1;
+
+	      if (round == 11){
+	          sprintf(msg, "Congratulations Soldier!!! Now get in the chopper and let's get out of here!!!!! \r\n Play again? Y/N \n");
+
+	  		// Suspend all tasks except this one
+	  		vTaskSuspend(DisplayTaskHandle);
+	  		vTaskSuspend(zombie_followHandle);
+	  		vTaskSuspend(shootTaskHandle);
+	  		vTaskSuspend(moveHandle);
+	  		vTaskSuspend(fetch_input_datHandle);
+	  		vTaskSuspend(switch_modeTaskHandle);
+	  		vTaskSuspend(healTaskHandle);
+	  		vTaskSuspend(deathTaskHandle);
+
+	          end_game();
+
+	      }
 	      sprintf(msg, "WELL DONE SOLDIER! TIME FOR ROUND %d\r\n", round);
 	      HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), HAL_MAX_DELAY);
 
 	      zombie_count = round * 5;
+
+	      if (round % 2 == 0){
+	    	  health++;
+		      sprintf(msg, "HERE'S A MED KIT PRIVATE! ----- HEALTH: %d\r\n", health);
+		      HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), HAL_MAX_DELAY);
+	      }
+
 	}
 
 
@@ -738,7 +807,17 @@ void StartDisplayTask(void const * argument)
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+	turnoffscreen();
+	turnonscreen();
+	clearscreen();
+
+	addpixel(c[0],c[1]);
+	addpixel(zombie_x, zombie_y);
+	addpixel(zombie_x, zombie_y-1);
+
+	osDelay(100);
+
+
   }
   /* USER CODE END StartDisplayTask */
 }
@@ -750,14 +829,13 @@ void StartDisplayTask(void const * argument)
 * @retval None
 */
 /* USER CODE END Header_Start_Zombie_Follow */
-void Start_Zombie_Follow(void const * argument)
+void Start_Zombie_Follow(void const *pvParameters)
 {
   /* USER CODE BEGIN Start_Zombie_Follow */
 
   int zombie_direction = 0;
   int edge_spawn = 0;
   int zombie_speed = 1000;
-
     /* Infinite loop */
   for(;;)
   {
@@ -802,6 +880,26 @@ void Start_Zombie_Follow(void const * argument)
 		  zombie_y--;
 	  }
 
+	  if (zombie_x == c[0] && zombie_y == c[1]){
+		  health--;
+          sprintf(msg, "ARRGHH!!!  ------ HEALTH : : %d\r\n", health);
+          HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), HAL_MAX_DELAY);
+
+		  if (health == 0){
+	            // Give the semaphore
+	            BaseType_t xDeathTaskWoken = pdFALSE;
+
+	            // Give the semaphore to unblock the task
+	            xSemaphoreGiveFromISR(xDeathSemaphore, &xDeathTaskWoken);
+
+	            // Request a context switch if necessary
+	            portYIELD_FROM_ISR(xDeathTaskWoken);
+		  }
+
+
+
+	  }
+
 	  //sprintf(msg, "Zombie X: %d\r\n", zombie_x);
 	 // HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), HAL_MAX_DELAY);
 
@@ -818,7 +916,7 @@ void Start_Zombie_Follow(void const * argument)
 * @retval None
 */
 /* USER CODE END Header_StartShootTask */
-void StartShootTask(void const * argument)
+void StartShootTask(void const *pvParameters)
 {
   /* USER CODE BEGIN StartShootTask */
 
@@ -856,7 +954,7 @@ void StartShootTask(void const * argument)
 						removepixel(bullet_pos_x+1, c[1]);
 					}
 
-					if(bullet_pos_x == zombie_x){
+					if(bullet_pos_x == zombie_x && bullet_pos_y == zombie_y){
 			            zombie_state = 0;
 			            zombie_count--;
 					}
@@ -889,8 +987,8 @@ void StartShootTask(void const * argument)
 			  updated = true;
 		  }
 
-	      sprintf(msg, "COUNT %d\r\n", zombie_count);
-	      HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), HAL_MAX_DELAY);
+	      //sprintf(msg, "COUNT %d\r\n", zombie_count);
+	      //HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), HAL_MAX_DELAY);
 
 		  if (zombie_count <= 0){
 	            BaseType_t xRoundPriorityTaskWoken = pdFALSE;
@@ -915,7 +1013,7 @@ void StartShootTask(void const * argument)
 * @retval None
 */
 /* USER CODE END Header_StartMoveTask */
-void StartMoveTask(void const * argument)
+void StartMoveTask(void const *pvParameters)
 {
   /* USER CODE BEGIN StartMoveTask */
 
@@ -1005,7 +1103,7 @@ void StartMoveTask(void const * argument)
 * @retval None
 */
 /* USER CODE END Header_StartFetchTask */
-void StartFetchTask(void const * argument)
+void StartFetchTask(void const *pvParameters)
 {
   /* USER CODE BEGIN StartFetchTask */
 
@@ -1067,7 +1165,7 @@ void StartFetchTask(void const * argument)
 * @retval None
 */
 /* USER CODE END Header_StartSwitchModeTask */
-void StartSwitchModeTask(void const * argument)
+void StartSwitchModeTask(void const *pvParameters)
 {
   /* USER CODE BEGIN StartSwitchModeTask */
   /* Infinite loop */
@@ -1089,8 +1187,8 @@ void StartSwitchModeTask(void const * argument)
             }
 
             // Debugging
-            sprintf(msg, "Mode changed to: %d\r\n", mode);
-            HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), HAL_MAX_DELAY);
+            //sprintf(msg, "Mode changed to: %d\r\n", mode);
+            //HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), HAL_MAX_DELAY);
         }
 
         osDelay(10); // Avoid starving other tasks
@@ -1105,14 +1203,38 @@ void StartSwitchModeTask(void const * argument)
 * @retval None
 */
 /* USER CODE END Header_StartDeathTask */
-void StartDeathTask(void const * argument)
+void StartDeathTask(void const *pvParameters)
 {
   /* USER CODE BEGIN StartDeathTask */
   /* Infinite loop */
   for(;;)
   {
+
+    if (xSemaphoreTake(xDeathSemaphore, portMAX_DELAY) == pdTRUE){
+
+        sprintf(msg, "YOU DIED \r\n Play again? Y/N \n");
+
+  		vTaskSuspend(roundTaskHandle);
+  		vTaskSuspend(DisplayTaskHandle);
+  		vTaskSuspend(zombie_followHandle);
+  		vTaskSuspend(shootTaskHandle);
+  		vTaskSuspend(moveHandle);
+  		vTaskSuspend(fetch_input_datHandle);
+  		vTaskSuspend(switch_modeTaskHandle);
+  		vTaskSuspend(healTaskHandle);
+
+        end_game();
+
+        // Enter idle state
+        for (;;)
+        {
+            osDelay(1);
+        }
+    }
+}
+
+
     osDelay(1);
-  }
   /* USER CODE END StartDeathTask */
 }
 
@@ -1123,12 +1245,15 @@ void StartDeathTask(void const * argument)
 * @retval None
 */
 /* USER CODE END Header_StartHealTask */
-void StartHealTask(void const * argument)
+void StartHealTask(void const *pvParameters)
 {
   /* USER CODE BEGIN StartHealTask */
   /* Infinite loop */
   for(;;)
   {
+
+
+
     osDelay(1);
   }
   /* USER CODE END StartHealTask */
@@ -1142,18 +1267,6 @@ void StartHealTask(void const * argument)
   * @param  htim : TIM handle
   * @retval None
   */
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
-{
-  /* USER CODE BEGIN Callback 0 */
-
-  /* USER CODE END Callback 0 */
-  if (htim->Instance == TIM1) {
-    HAL_IncTick();
-  }
-  /* USER CODE BEGIN Callback 1 */
-
-  /* USER CODE END Callback 1 */
-}
 
 /**
   * @brief  This function is executed in case of error occurrence.
