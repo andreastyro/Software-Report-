@@ -62,16 +62,15 @@ TIM_HandleTypeDef htim2;
 UART_HandleTypeDef huart2;
 
 osThreadId roundTaskHandle;
-osThreadId USBTaskHandle;
+osThreadId DisplayTaskHandle;
 osThreadId zombie_followHandle;
 osThreadId shootTaskHandle;
-osThreadId zombie_spawnHandle;
 osThreadId moveHandle;
-osThreadId zombie_directioHandle;
 osThreadId fetch_input_datHandle;
 osThreadId switch_modeTaskHandle;
 osThreadId switch_modeHandle;
-osMessageQId SensorQueue01Handle;
+osThreadId deathTaskHandle;
+osThreadId healTaskHandle;
 /* USER CODE BEGIN PV */
 uint16_t Xaxis = 0;
 uint16_t Yaxis = 0;
@@ -121,15 +120,15 @@ static void MX_USART2_UART_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_TIM2_Init(void);
-void StartRoundTask(void *pvParameters);
-void StartUSBTask(void const * argument);
-void Start_Zombie_Follow(void *pvParameters);
-void StartShootTask(void *pvParameters);
-void StartZombieSpawn(void const * argument);
-void StartMoveTask(void *pvParameters);
-void StartZombieDirection(void const * argument);
-void StartFetchTask(void *pvParameters);
-void StartSwitchModeTask(void *pvParameters);
+void StartRoundTask(void const * argument);
+void StartDisplayTask(void const * argument);
+void Start_Zombie_Follow(void const * argument);
+void StartShootTask(void const * argument);
+void StartMoveTask(void const * argument);
+void StartFetchTask(void const * argument);
+void StartSwitchModeTask(void const * argument);
+void StartDeathTask(void const * argument);
+void StartHealTask(void const * argument);
 
 /* USER CODE BEGIN PFP */
 
@@ -285,8 +284,6 @@ int main(void)
   /* start timers, add new ones, ... */
   /* USER CODE END RTOS_TIMERS */
 
-  /* Create the queue(s) */
-
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
   /* USER CODE END RTOS_QUEUES */
@@ -296,37 +293,41 @@ int main(void)
   osThreadDef(roundTask, StartRoundTask, osPriorityHigh, 0, 128);
   roundTaskHandle = osThreadCreate(osThread(roundTask), NULL);
 
-  /* definition and creation of USBTask */
-  osThreadDef(USBTask, StartUSBTask, osPriorityHigh, 0, 256);
-  USBTaskHandle = osThreadCreate(osThread(USBTask), NULL);
+  /* definition and creation of DisplayTask */
+  osThreadDef(DisplayTask, StartDisplayTask, osPriorityHigh, 0, 256);
+  DisplayTaskHandle = osThreadCreate(osThread(DisplayTask), NULL);
 
   /* definition and creation of zombie_follow */
-  osThreadDef(zombie_follow, Start_Zombie_Follow, osPriorityNormal, 0, 128);
+  osThreadDef(zombie_follow, Start_Zombie_Follow, osPriorityIdle, 0, 128);
   zombie_followHandle = osThreadCreate(osThread(zombie_follow), NULL);
 
   /* definition and creation of shootTask */
-  osThreadDef(shootTask, StartShootTask, osPriorityNormal, 0, 128);
+  osThreadDef(shootTask, StartShootTask, osPriorityIdle, 0, 128);
   shootTaskHandle = osThreadCreate(osThread(shootTask), NULL);
 
-  /* definition and creation of zombie_spawn */
-  //osThreadDef(zombie_spawn, StartZombieSpawn, osPriorityIdle, 0, 128);
-  //zombie_spawnHandle = osThreadCreate(osThread(zombie_spawn), NULL);
-
   /* definition and creation of move */
-  osThreadDef(move, StartMoveTask, osPriorityNormal, 0, 128);
+  osThreadDef(move, StartMoveTask, osPriorityIdle, 0, 128);
   moveHandle = osThreadCreate(osThread(move), NULL);
 
-  /* definition and creation of zombie_directio */
-  //osThreadDef(zombie_directio, StartZombieDirection, osPriorityNormal, 0, 128);
-  //zombie_directioHandle = osThreadCreate(osThread(zombie_directio), NULL);
-
   /* definition and creation of fetch_input_dat */
-  osThreadDef(fetch_input_dat, StartFetchTask, osPriorityHigh, 0, 128);
+  osThreadDef(fetch_input_dat, StartFetchTask, osPriorityIdle, 0, 128);
   fetch_input_datHandle = osThreadCreate(osThread(fetch_input_dat), NULL);
 
   /* definition and creation of switch_modeTask */
-  osThreadDef(switch_modeTask, StartSwitchModeTask, osPriorityHigh, 0, 128);
+  osThreadDef(switch_modeTask, StartSwitchModeTask, osPriorityIdle, 0, 128);
   switch_modeTaskHandle = osThreadCreate(osThread(switch_modeTask), NULL);
+
+  /* definition and creation of switch_mode */
+  osThreadDef(switch_mode, StartSwitchModeTask, osPriorityHigh, 0, 128);
+  switch_modeHandle = osThreadCreate(osThread(switch_mode), NULL);
+
+  /* definition and creation of deathTask */
+  osThreadDef(deathTask, StartDeathTask, osPriorityIdle, 0, 128);
+  deathTaskHandle = osThreadCreate(osThread(deathTask), NULL);
+
+  /* definition and creation of healTask */
+  osThreadDef(healTask, StartHealTask, osPriorityIdle, 0, 128);
+  healTaskHandle = osThreadCreate(osThread(healTask), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -375,10 +376,14 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  while (1)
+  {
+    /* USER CODE END WHILE */
 
-}
+    /* USER CODE BEGIN 3 */
+  }
   /* USER CODE END 3 */
-
+}
 
 /**
   * @brief System Clock Configuration
@@ -450,13 +455,13 @@ static void MX_ADC1_Init(void)
   hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
   hadc1.Init.ScanConvMode = ENABLE;
-  hadc1.Init.ContinuousConvMode = ENABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
   hadc1.Init.NbrOfConversion = 2;
-  hadc1.Init.DMAContinuousRequests = ENABLE;
+  hadc1.Init.DMAContinuousRequests = DISABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
   {
@@ -697,7 +702,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
   * @retval None
   */
 /* USER CODE END Header_StartRoundTask */
-void StartRoundTask(void *pvParameters)
+void StartRoundTask(void const * argument)
 {
   /* USER CODE BEGIN 5 */
   int round = 1;
@@ -720,32 +725,22 @@ void StartRoundTask(void *pvParameters)
   /* USER CODE END 5 */
 }
 
-/* USER CODE BEGIN Header_StartUSBTask */
+/* USER CODE BEGIN Header_StartDisplayTask */
 /**
-* @brief Function implementing the USBTask thread.
+* @brief Function implementing the DisplayTask thread.
 * @param argument: Not used
 * @retval None
 */
-/* USER CODE END Header_StartUSBTask */
-void StartUSBTask(void const * argument) //In charge of screen
+/* USER CODE END Header_StartDisplayTask */
+void StartDisplayTask(void const * argument)
 {
-  /* USER CODE BEGIN StartUSBTask */
+  /* USER CODE BEGIN StartDisplayTask */
   /* Infinite loop */
   for(;;)
   {
-
-	turnoffscreen();
-	turnonscreen();
-	clearscreen();
-
-	addpixel(c[0],c[1]);
-
-	addpixel(zombie_x, zombie_y);
-    addpixel(zombie_x, zombie_y-1);
-
-    osDelay(100);
+    osDelay(1);
   }
-  /* USER CODE END StartUSBTask */
+  /* USER CODE END StartDisplayTask */
 }
 
 /* USER CODE BEGIN Header_Start_Zombie_Follow */
@@ -755,7 +750,7 @@ void StartUSBTask(void const * argument) //In charge of screen
 * @retval None
 */
 /* USER CODE END Header_Start_Zombie_Follow */
-void Start_Zombie_Follow(void *pvParameters)
+void Start_Zombie_Follow(void const * argument)
 {
   /* USER CODE BEGIN Start_Zombie_Follow */
 
@@ -814,7 +809,6 @@ void Start_Zombie_Follow(void *pvParameters)
 
   }
   /* USER CODE END Start_Zombie_Follow */
-
 }
 
 /* USER CODE BEGIN Header_StartShootTask */
@@ -824,7 +818,7 @@ void Start_Zombie_Follow(void *pvParameters)
 * @retval None
 */
 /* USER CODE END Header_StartShootTask */
-void StartShootTask(void *pvParameters)
+void StartShootTask(void const * argument)
 {
   /* USER CODE BEGIN StartShootTask */
 
@@ -914,7 +908,6 @@ void StartShootTask(void *pvParameters)
   /* USER CODE END StartShootTask */
 }
 
-
 /* USER CODE BEGIN Header_StartMoveTask */
 /**
 * @brief Function implementing the move thread.
@@ -922,7 +915,7 @@ void StartShootTask(void *pvParameters)
 * @retval None
 */
 /* USER CODE END Header_StartMoveTask */
-void StartMoveTask(void *pvParameters)
+void StartMoveTask(void const * argument)
 {
   /* USER CODE BEGIN StartMoveTask */
 
@@ -1005,9 +998,6 @@ void StartMoveTask(void *pvParameters)
   /* USER CODE END StartMoveTask */
 }
 
-/* USER CODE BEGIN Header_StartZombieDirection */
-/**
-
 /* USER CODE BEGIN Header_StartFetchTask */
 /**
 * @brief Function implementing the fetch_input_dat thread.
@@ -1015,7 +1005,7 @@ void StartMoveTask(void *pvParameters)
 * @retval None
 */
 /* USER CODE END Header_StartFetchTask */
-void StartFetchTask(void *pvParameters)
+void StartFetchTask(void const * argument)
 {
   /* USER CODE BEGIN StartFetchTask */
 
@@ -1077,7 +1067,7 @@ void StartFetchTask(void *pvParameters)
 * @retval None
 */
 /* USER CODE END Header_StartSwitchModeTask */
-void StartSwitchModeTask(void *pvParameters)
+void StartSwitchModeTask(void const * argument)
 {
   /* USER CODE BEGIN StartSwitchModeTask */
   /* Infinite loop */
@@ -1108,6 +1098,42 @@ void StartSwitchModeTask(void *pvParameters)
   /* USER CODE END StartSwitchModeTask */
 }
 
+/* USER CODE BEGIN Header_StartDeathTask */
+/**
+* @brief Function implementing the deathTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartDeathTask */
+void StartDeathTask(void const * argument)
+{
+  /* USER CODE BEGIN StartDeathTask */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END StartDeathTask */
+}
+
+/* USER CODE BEGIN Header_StartHealTask */
+/**
+* @brief Function implementing the healTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartHealTask */
+void StartHealTask(void const * argument)
+{
+  /* USER CODE BEGIN StartHealTask */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END StartHealTask */
+}
+
 /**
   * @brief  Period elapsed callback in non blocking mode
   * @note   This function is called  when TIM1 interrupt took place, inside
@@ -1116,6 +1142,18 @@ void StartSwitchModeTask(void *pvParameters)
   * @param  htim : TIM handle
   * @retval None
   */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  /* USER CODE BEGIN Callback 0 */
+
+  /* USER CODE END Callback 0 */
+  if (htim->Instance == TIM1) {
+    HAL_IncTick();
+  }
+  /* USER CODE BEGIN Callback 1 */
+
+  /* USER CODE END Callback 1 */
+}
 
 /**
   * @brief  This function is executed in case of error occurrence.
